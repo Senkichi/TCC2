@@ -44,7 +44,7 @@ parse_url <- function(x=NULL){
 #' web scraping interface that parses out full-path URL's for 30 arc-second
 #' (900m) worldclim data.
 #' @export
-scrape_worldclim <- function(base_url="http://worldclim.org/cmip5_30s",
+scrape_worldclim <- function(base_urls= c("http://worldclim.org/cmip5_30s", 'http://www.worldclim.org/cmip5_10m', 'http://www.worldclim.org/cmip5_5m', 'http://www.worldclim.org/cmip5_2.5m'),
                              models=NULL, # two-letter codes for CMIP model
                              climate=FALSE,
                              bioclim=FALSE,
@@ -53,11 +53,15 @@ scrape_worldclim <- function(base_url="http://worldclim.org/cmip5_30s",
                              end_of_century=FALSE,
                              scen_45=FALSE,
                              scen_85=FALSE,
-                             res="30s",
+                             res=NULL,
                              formats="bi"
 ){
   # fetch and parse index.html
-  hrefs_future <- parse_hrefs(url = base_url)
+  if (!is.null(res)){
+    base_urls <- grep_by(base_urls, pattern = paste(res, collapse = '|'))
+  }
+  hrefs_future <- vector()
+  hrefs_future <- append(hrefs_future, unlist(lapply(base_urls, FUN = parse_hrefs)))
   hrefs_current <- parse_hrefs("http://worldclim.org/current")
   hrefs_final <- vector() # "final" URL's fetch-list
   # greppable user parameters for models to fetch
@@ -118,6 +122,10 @@ scrape_worldclim <- function(base_url="http://worldclim.org/cmip5_30s",
       hrefs_final,
       pattern = paste(resolutions, collapse = "|")
     )
+    hrefs_current <- grep_by(
+      hrefs_current,
+      pattern = paste(resolutions, collapse = '|')
+    )
   }
   # grep across file formats - temporarily disabled, not working as intended
   #if (!is.null(formats)){
@@ -145,7 +153,7 @@ scrape_worldclim <- function(base_url="http://worldclim.org/cmip5_30s",
     if (bioclim){
       hrefs_final <- append(
         hrefs_final,
-        grep_by(hrefs_current, pattern = "/bi.[0-9]")
+        grep_by(hrefs_current, pattern = "/bio_.+?bil")
       )
     }
     if (climate){
@@ -162,7 +170,7 @@ scrape_worldclim <- function(base_url="http://worldclim.org/cmip5_30s",
 
 #' fetch and unpack missing worldclim climate data
 #' @export
-worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data"){
+worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data", resolution = NULL, time = FALSE){
   if(!dir.exists(exdir)){
     dir.create(exdir)
   }
@@ -171,6 +179,33 @@ worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data"){
     strsplit(urls,split="/"),
     FUN = function(x) return(x[length(x)])
   ))
+  #allows for the parsing of multiple resolutions at once
+  if (!is.null(resolution)) {
+    plus_resolution <- paste(
+      unlist(lapply(
+        strsplit(urls,split="/"),
+        FUN = function(x) return(x[length(x) - 1])
+      )),
+      unlist(lapply(
+        strsplit(urls,split="/"),
+        FUN = function(x) return(x[length(x)])
+      )),
+      sep = '_'
+    )
+    resolution_search <- paste(
+      unlist(lapply(
+        strsplit(urls,split="/"),
+        FUN = function(x) return(x[length(x) - 1])
+      )),
+      unlist(lapply(
+        strsplit(urls,split="/"),
+        FUN = function(x) return(x[length(x)])
+      )),
+      sep = '/'
+    )
+    resolution_search <- resolution_search[grep(resolution_search, pattern = 'cur', invert = T)]
+    plus_resolution <- plus_resolution[(grep(plus_resolution, pattern = 'cur', invert = T))]
+  }
   if(sum(grepl(existing_files, pattern=paste(climate_zips,collapse="|")) ) != length(climate_zips) ){
     cat(" -- fetching missing climate data\n")
     # strip the existing files so we only match against the filename
@@ -180,7 +215,14 @@ worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data"){
     ),
     FUN=function(x) return(x[length(x)])
     ))
-    missing_files <- which(!(climate_zips %in% fn_existing_files))
+    if (!is.null(resolution)){
+      climate_zips <- append(climate_zips, plus_resolution)
+      missing_files <- which(!(climate_zips %in% fn_existing_files))
+      #//TODO - need to check missin files for files with the plus_res names, and replace then with correct links from res_search
+    } else {
+      missing_files <- which(!(climate_zips %in% fn_existing_files))
+    }
+    #//TODO - need to make sure downloaded res_search zips are saved in plus_res format to preent duplicates
     for(i in missing_files){
       download.file(
         urls[i],
@@ -306,105 +348,6 @@ build_worldclim_stack <- function(vars=NULL,
 }
 
 
-crop_and_combine <- function(worldclim,
-                             landfire,
-                             parallel = F,
-                             bounds = NULL,
-                             bio_raster){
-  if((!is.null(bounds))&(is.character(bounds))){
-    world_stack <- readOGR(bounds)
-  } else if((!is.null(bounds))&(inherits(bounds, "Spatial"))){
-    bounds <- bounds
-  } 
-  if(is.character(landfire)){
-    landfire_stack <- stack(landfire)
-  } else if(inherits(landfire, "Raster")){
-    landfire_stack <- landfire
-  } else {
-    landfire_stack <- raster::stack(gsub(list.files(
-      "landfire_data",
-      pattern = "ovr$",
-      recursive = T,
-      full.names = T
-    ),
-    pattern = "[.]...",
-    replacement = ""
-    ))
-    NAvalue(landfire_stack) <- -9999
-  }
-  if((!is.null(bounds))&(!compareCRS(projection(landfire_stack), projection(bounds)))){
-    bounds <- spTransform(bounds, projection(landfire_stack))
-  }
-  if(!is.null(bounds)){
-    landfire_stack <- crop(landfire_stack, bounds)
-  }
-  if(is.character(worldclim)){
-    world_stack <- stack(worldclim)
-  } else if(inherits(worldclim, "Raster")){
-    world_stack <- worldclim
-  } else {
-    world_stack <- worldclim_stack(bioclim = T, time = "cur", bounding = bounds)
-  }
-  if((!is.null(bounds))&(!compareCRS(projection(world_stack), projection(bounds)))){
-    bounds <- spTransform(bounds, projection(world_stack))
-  }
-  if(!is.null(bounds)){
-    world_stack <- crop(world_stack, bounds)
-  }
-  if(parallel){
-    cl <- detectCores()
-    beginCluster(cl-1)
-    on.exit(returnCluster())
-    if((!compareCRS(projection(landfire_stack), projection(world_stack)))|(!landfire_stack@extent==world_stack@extent)){
-      landfire_stack <- raster::projectRaster(
-        from=landfire_stack, 
-        crs=sp::CRS(raster::projection(world_stack)
-        ))
-      landfire_stack <- raster::resample(
-        landfire_stack, 
-        world_stack, 
-        method='ngb'
-      )
-    }
-    if((!compareCRS(projection(bio_raster), projection(world_stack)))|(!bio_raster@extent==world_stack@extent)){
-      bio_raster <- raster::projectRaster(
-        from=bio_raster, 
-        crs=sp::CRS(raster::projection(world_stack)
-        ))
-      bio_raster <- raster::resample(
-        bio_raster, 
-        world_stack, 
-        method='ngb'
-      )
-    }
-  } else {
-    if((!compareCRS(projection(landfire_stack), projection(world_stack)))|(!landfire_stack@extent==world_stack@extent)){
-      landfire_stack <- raster::projectRaster(
-        from=landfire_stack, 
-        crs=sp::CRS(raster::projection(world_stack)
-        ))
-      landfire_stack <- raster::resample(
-        landfire_stack, 
-        world_stack, 
-        method='ngb'
-      )
-    }
-    if((!compareCRS(projection(bio_raster), projection(world_stack)))|(!bio_raster@extent==world_stack@extent)){
-      bio_raster <- raster::projectRaster(
-        from=bio_raster, 
-        crs=sp::CRS(raster::projection(world_stack)
-        ))
-      bio_raster <- raster::resample(
-        bio_raster, 
-        world_stack, 
-        method='ngb'
-      )
-    }
-  }
-  final_stack <- stack(world_stack, landfire_stack, bio_raster, quick = T)
-} 
-
-
 # read in fire data, currently as polugons of the fire boundaries with associated data
 fire <- readOGR('../data/Wildfires_1870_2015_Great_Basin_SHAPEFILE/Wildfires_1870_2015_Great_Basin.shp')
 
@@ -443,7 +386,6 @@ worldclim_fetch_and_unpack(urls = scrape_worldclim(
   models = "BC",
   res = c('10m', '5m', '2-5m')
 ))
-
 
 #get worldclim data for the current dataset
 worldclim <- raster::crop(
@@ -495,20 +437,29 @@ us_extent <- as(
 raster::projection(us_extent) <-
   sp::CRS(raster::projection("+init=epsg:4326"))
 
-
-#Get worldclim data for the future dataset
-future_worldclim <- build_worldclim_stack(bioclim = T, time = "70", pattern = '45')
-  future_worldclim <- crop(future_worldclim, us_extent, filename = 'future_worldclim', overwrite = T)
+#Function for the creation of 
 
 
-#create a layer of centerpoints for each raster pixel, we will use these points to extract the data
-#values from each stacked raster layer underneath each point to create the final dataframe
-future_points <- raster::rasterToPoints(future_worldclim, spatial=T, filename = 'future_points', overwrite = T)
+#Looping through future frame creation
+for (i in resolutions){
+  for (j in eras){
+    #Get worldclim data for the future dataset
+    future_worldclim <- build_worldclim_stack(bioclim = T, time = '50', pattern = '45')
+    future_worldclim <- crop(future_worldclim, us_extent, filename = 'future_worldclim', overwrite = T)
+    
+    
+    #create a layer of centerpoints for each raster pixel, we will use these points to extract the data
+    #values from each stacked raster layer underneath each point to create the final dataframe
+    future_points <- raster::rasterToPoints(future_worldclim, spatial=T, filename = 'future_points', overwrite = T)
+    
+    #extract future data and coordinates as a n length list for the n pixels, and bind to list of coordinates
+    future_frame <- raster::extract(future_worldclim, future_points)
+    
+    future_frame <- cbind(future_points@coords, future_frame)
+    
+    
+    write.csv(future_frame, '2070_rcp45_bc_frame.csv')
+  }
+}
 
-#extract future data and coordinates as a n length list for the n pixels, and bind to list of coordinates
-future_frame <- raster::extract(future_worldclim, future_points)
 
-future_frame <- cbind(future_points@coords, future_frame)
-
-
-write.csv(future_frame, '2070_rcp45_bc_frame.csv')
