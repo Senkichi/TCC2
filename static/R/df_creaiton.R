@@ -193,6 +193,7 @@ worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data", resoluti
       sep = '_'
     )
     resolution_search <- paste(
+      'cmip5',
       unlist(lapply(
         strsplit(urls,split="/"),
         FUN = function(x) return(x[length(x) - 1])
@@ -203,6 +204,7 @@ worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data", resoluti
       )),
       sep = '/'
     )
+    #most of this convoluted code allows for the searching and saving of differing resolutions with similar link endings
     resolution_search <- resolution_search[grep(resolution_search, pattern = 'cur', invert = T)]
     plus_resolution <- plus_resolution[(grep(plus_resolution, pattern = 'cur', invert = T))]
   }
@@ -216,22 +218,53 @@ worldclim_fetch_and_unpack <- function(urls=NULL, exdir="climate_data", resoluti
     FUN=function(x) return(x[length(x)])
     ))
     if (!is.null(resolution)){
-      climate_zips <- append(climate_zips, plus_resolution)
       missing_files <- which(!(climate_zips %in% fn_existing_files))
-      #//TODO - need to check missin files for files with the plus_res names, and replace then with correct links from res_search
+      missing_res <- which(!(plus_resolution %in% fn_existing_files))
+      res_urls <- c()
+      for (i in missing_res){
+        res_urls[i] <- resolution_search[i]
+      }
+      res_urls <- urls[grep(urls, pattern = paste(res_urls, collapse = '|'))]
+      res_final <- append(res_urls, urls[missing_files])
+      redundant_zips <- unlist(lapply(
+        strsplit(res_final,split="/"),
+        FUN = function(x) return(x[length(x)])
+      ))
+      #check missin files for files with the plus_res names, and replace then with correct links from res_search
+      for(i in length(res_final)){
+        if (i <= length(res_urls)){
+          download.file(
+            res_final[i],
+            destfile=file.path(paste(
+              exdir,
+              plus_resolution[missing_res[i]],
+              sep = "/")
+            )
+          )
+        } else {
+          download.file(
+            res_final[i],
+            destfile=file.path(paste(
+              exdir,
+              redundant_zips[i],
+              sep = "/")
+            )
+          )
+        }
+      }
     } else {
       missing_files <- which(!(climate_zips %in% fn_existing_files))
-    }
-    #//TODO - need to make sure downloaded res_search zips are saved in plus_res format to preent duplicates
-    for(i in missing_files){
-      download.file(
-        urls[i],
-        destfile=file.path(paste(
-          exdir,
-          climate_zips[i],
-          sep = "/")
+      
+      for(i in missing_files){
+        download.file(
+          urls[i],
+          destfile=file.path(paste(
+            exdir,
+            climate_zips[i],
+            sep = "/")
+          )
         )
-      )
+      }
     }
   }
   # check for existing rasters in exdir and unpack if none found
